@@ -21,7 +21,9 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.spatial import Delaunay
 from scipy.stats import gaussian_kde
 import glob
-
+import lxml
+from lxml import etree
+import pandas as pd
 
 class Triangle:
     def __init__(self, vertices):
@@ -197,7 +199,7 @@ class AnimationCreator:
 class HeatmapFrames:
     images, polygons = [], []
 
-    def __init__(self, move_events, map_width=1280, map_height=768, dpi=100, kde_bins=200):
+    def __init__(self, move_events, map_width=1280, map_height=768, dpi=10, kde_bins=200):
         self.move_events = move_events
         self.map_width = map_width
         self.map_height = map_height
@@ -207,6 +209,17 @@ class HeatmapFrames:
 
     def slice_moves(self, first_ts, until_ts):
         moves = []
+        #for i in range(first_ts, until_ts):
+        #    print(i)
+        #    for (x, y, t) in self.move_events:
+        #        if t == i:
+        #            moves.append([x,y,t]) 
+        #print(first_ts, until_ts)
+        #for (x, y, t) in self.move_events:
+        #    #print(t)
+        #    if t >= first_ts and t <= until_ts:
+        #        moves.append([x,y,t])           
+
         for (x, y, t) in self.move_events:
             if t < first_ts:
                 continue
@@ -238,7 +251,7 @@ class HeatmapFrames:
         plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
 
         xi, yi, zi = data[0][0], data[0][1], data[0][2]
-        cs = axes.contourf(xi, yi, zi.reshape(xi.shape), levels=4)
+        cs = axes.contourf(xi, yi, zi.reshape(xi.shape), levels=2)
 
         paths_col = cs.collections
         collections = paths_col[len(paths_col) - 2:len(paths_col)]
@@ -251,7 +264,9 @@ class HeatmapFrames:
                 for pol in polygons[0:1]:
                     for coord in pol:
                         x, y = coord[0:2]
-                        plt.plot(x, y)
+
+                        # no need to save polygon plots (we only need the points)
+                        #plt.plot(x, y)
                 polygons_all.append(polygons)
 
         # FIXME: Why x/10? What does it mean?
@@ -266,26 +281,32 @@ class HeatmapFrames:
         first_ts = self.move_events[0][2]
         last_ts = self.move_events[-1][2]
 
+    # use fixem num steps
         if num_steps > 0:
             time_step = (last_ts - first_ts) // num_steps
 
         for x in range(first_ts, last_ts, time_step):
+        #for x in range(0, 100, time_step):
             ini_ts = x
             end_ts = x + time_step
 
             moves_filtered = self.slice_moves(ini_ts, end_ts)
             # We may end up with an empty slice of the data.
             if not moves_filtered:
+                print('no moves in this timespan')
                 continue
 
             print(f'Processing {len(moves_filtered)} points in slice {x} ...', file=sys.stderr)
+            print(moves_filtered)
             try:
                 data = self.get_coordinates_kde(moves_filtered)
-            except:
-                print('Error: Could not apply KDE. Most likely got a numpy.linalg.LinAlgError', file=sys.stderr)
+            except Exception as e:
+                print(e)
+                #print('Error: Could not apply KDE. Most likely got a numpy.linalg.LinAlgError', file=sys.stderr)
                 continue
 
             fig, axes = plt.subplots(figsize=(self.map_width/self.dpi, self.map_height/self.dpi), dpi=self.dpi)
+
             axes.pcolormesh(data[0], data[1], data[2].reshape(data[0].shape), shading='auto', cmap=plt.cm.jet)
             axes.invert_yaxis()
             plt.gca().set_axis_off()
@@ -296,8 +317,7 @@ class HeatmapFrames:
             plt.gca().xaxis.set_major_locator(plt.NullLocator())
             plt.gca().yaxis.set_major_locator(plt.NullLocator())
             fig.canvas.draw()
-
-            self.polygons.append(self.create_polygons([data], axes))
+            plt.show()
 
             buf = io.BytesIO()
             fig.savefig(buf, format='png')
@@ -308,6 +328,10 @@ class HeatmapFrames:
             img = Image.fromarray(img)
 
             self.images.append(np.array(img))
+
+            # Generate polygons after  images
+            self.polygons.append(self.create_polygons([data], axes))
+
             plt.close()
 
         return self.images, self.polygons
@@ -315,10 +339,13 @@ class HeatmapFrames:
 
 if __name__ == '__main__':
     # TODO: Use a config file instead of CLI args, if we plan to have lots of different options.
+    
+    map_width, map_height = 1280, 768
 
     parser = argparse.ArgumentParser(description='Create a heatmap animation out of multiple CSV files.',
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('filenames', nargs='+', help='names of the CSV files to be used')
+    parser.add_argument('xml_filenames', nargs='+', help='names of the XML files to be used')
     parser.add_argument('--delimiter', default=' ', help='column delimiter')
     parser.add_argument('--outfile', help='output video filename')
     parser.add_argument('--time_step', type=int, default=10, help='time step duration, in seconds')
@@ -327,7 +354,7 @@ if __name__ == '__main__':
     parser.add_argument('--fps', type=int, default=60, help='frame rate, or animation speed')
     parser.add_argument('--map_width', type=int, default=1280, help='output animation width')
     parser.add_argument('--map_height', type=int, default=768, help='output animation height')
-    parser.add_argument('--dpi', type=int, default=100, help='image resolution, in dots per inch')
+    parser.add_argument('--dpi', type=int, default=500, help='image resolution, in dots per inch')
     parser.add_argument('--kde_bins', type=int, default=50, help='number of bins for kernel density estimation')
     parser.add_argument('--verbose', default=False, action='store_true', help='print more progress messges')
     parser.add_argument('--time_overlay', default=False, action='store_true',
@@ -343,17 +370,25 @@ if __name__ == '__main__':
     move_events = []
     now = time.mktime(time.gmtime())
 
-#    for filename in args.filenames:
-    for filename in glob.glob(args.filenames[0])[:5]:
+#   for filename in args.filenames:
+    for filename in glob.glob(args.filenames[0])[:10]:
+        print(filename)
+        file_df = pd.read_csv(filename)
+        first_row = file_df.iloc[0, 0]
+        values = first_row.split(' ')
+        first_ts = float(values[-1])
+
         with open(filename) as f:
             reader = csv.reader(f, delimiter=args.delimiter)
             for row in reader:
+                print("Main loop: ", row)
                 # TODO: Consider a 4th column (movment duration) in the future.
                 x, y, t = row[0:3]
 
                 # Ignore CSV header, if present.
+                # normalize first timestamp
                 try:
-                    t = float(t)
+                    t = float(t) - first_ts
                 except:
                     continue
 
@@ -362,7 +397,84 @@ if __name__ == '__main__':
                     t = t / 1000.
 
                 move_events.append([float(x), float(y), int(t)])
+                
+    print(move_events)
 
+
+    # normalize width based on participants screen width
+    screen_width_list = []
+    for i, filename in enumerate(glob.glob(args.xml_filenames[0])[:10]):
+        tree = etree.parse(filename)
+        root = tree.getroot()
+        screen_dimentions = root[3].text  # 4th subelement is <window>
+        screen_width = int(screen_dimentions.split("x")[0])
+        #screen_width_list.append(screen_width)
+    
+        ratio = 1
+        #print(filename)
+        if screen_width != 0:  # no 'window' tag for 20161222223312.xml; screen_width = 0
+            print("non zero screen width")
+            ratio = map_width / screen_width
+
+        move_events[i][0] = move_events[i][0]*ratio
+ 
+    print(move_events) 
+
+    # Add missing fixations
+    #for i in range(len(move_events)):
+    #    first_entry = move_events[i]
+    #    next_entry = move_events[i+1]
+    #    for j in range(first_entry[2], next_entry[2]):
+    #        move_events.append([first_entry[0], first_entry[1], j])
+
+    selection = []
+    for event in move_events:
+        if event[2] == 0:
+            selection.append(event)
+
+    print('Selection: ', selection)
+    print(len(selection))
+
+    data_array = np.array(move_events)
+    X = data_array[:, 0]
+    Y = data_array[:, 1] 
+    quartiles = np.percentile(X, [25, 50, 75])
+    #print(quartiles)
+
+    """
+    kde_bins = 200
+    #move_events = np.array(move_events)
+    #print(move_events[:, 0])
+
+    start = 40
+    end = 50
+    X = np.array([p[0] for p in move_events[start:end]])
+    Y = np.array([p[1] for p in move_events[start:end]])
+    print(len(X))
+    print(len(Y))
+
+    my_data = np.vstack([X, Y])
+
+    xi, yi = np.mgrid[0:map_width:kde_bins * 1j, 0:map_height:kde_bins * 1j]
+
+
+    kernel = gaussian_kde(my_data)
+    zi = kernel(np.vstack([xi.flatten(), yi.flatten()]))
+    data = [xi, yi, zi]
+
+    fig, axes = plt.subplots()
+    axes.pcolormesh(data[0], data[1], data[2].reshape(data[0].shape), shading='auto', cmap=plt.cm.jet)
+    axes.invert_yaxis()
+    plt.gca().set_axis_off()
+    # FIXME: Why we can't set all margins to 0?
+    # "ValueError: left cannot be >= right"
+    plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+    plt.margins(0, 0)
+    plt.gca().xaxis.set_major_locator(plt.NullLocator())
+    plt.gca().yaxis.set_major_locator(plt.NullLocator())
+    #plt.show()
+    #plt.savefig('plot_{}_{}.png'.format(start, end))
+    """
 
     text_overlay = ''
     if args.time_overlay:
@@ -373,7 +485,6 @@ if __name__ == '__main__':
         last_date = datetime.fromtimestamp(last_ts).strftime(display_format)
         text_overlay = f'{first_date} --> {last_date}'
 
-
     hf = HeatmapFrames(move_events, args.map_width, args.map_height, args.kde_bins)
     images, polygons = hf.generate(time_step=args.time_step, num_steps=args.num_steps)
 
@@ -381,3 +492,10 @@ if __name__ == '__main__':
 
     ac = AnimationCreator(images, polygons, args.duration, args.fps, text_overlay)
     ac.save(args.outfile)
+
+# frame rate - how many slices
+# how smooth the morphing should be (transition between frames)
+# stepsize 
+# downsample large set of data
+# upsample small 
+# scipy linspace 
