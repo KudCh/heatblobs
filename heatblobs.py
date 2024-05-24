@@ -12,7 +12,7 @@ import csv
 import io
 import cv2
 import time
-import datetime
+from datetime import datetime
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -82,8 +82,10 @@ class Morpher:
                 raise TypeError('Element of input rightTriangles is not of Class Triangle')
 
         self.leftImage = np.ndarray.copy(left_image)
+        self.newLeftImage = np.ndarray.copy(left_image)
         self.leftTriangles = left_triangles
         self.rightImage = np.ndarray.copy(right_image)
+        self.newRightImage = np.ndarray.copy(right_image)
         self.rightTriangles = right_triangles
         self.leftInterpolation = RectBivariateSpline(np.arange(self.leftImage.shape[0]),
                                                      np.arange(self.leftImage.shape[1]),
@@ -92,12 +94,11 @@ class Morpher:
                                                       np.arange(self.rightImage.shape[1]),
                                                       self.rightImage)
 
-
     def get_image_at_alpha(self, alpha):
         for leftTriangle, rightTriangle in zip(self.leftTriangles, self.rightTriangles):
             self.interpolate_points(leftTriangle, rightTriangle, alpha)
 
-        blend_arr = ((1 - alpha) * self.leftImage + alpha * self.rightImage)
+        blend_arr = ((1 - alpha) * self.newLeftImage + alpha * self.newRightImage)
         blend_arr = blend_arr.astype(np.uint8)
         return blend_arr
 
@@ -131,12 +132,12 @@ class Morpher:
         target_points = np.transpose(target_points)
 
         for x, y, z in zip(target_points, left_source_points, right_source_points):
-            self.leftImage[int(x[1])][int(x[0])] = self.leftInterpolation(y[1], y[0])
-            self.rightImage[int(x[1])][int(x[0])] = self.rightInterpolation(z[1], z[0])
+            if int(x[1]) >=  self.newLeftImage.shape[0]:
+                x[1] = x[1]-1
+            self.newLeftImage[int(x[1])][int(x[0])] = self.leftInterpolation(y[1], y[0])
+            self.newRightImage[int(x[1])][int(x[0])] = self.rightInterpolation(z[1], z[0])
 
-# polygons points
-# duration variable
-# 
+
 class AnimationCreator:
     def __init__(self, images, polygons, duration, fps, text='', smoothing=None):
         total_frames = fps*duration
@@ -210,7 +211,8 @@ class AnimationCreator:
                     np.array(morphers[1].get_image_at_alpha(alpha)),
                     np.array(morphers[2].get_image_at_alpha(alpha)),
                 ])
-
+            #cv2.imshow('frame {}'.format(i), out_image)
+            #cv2.waitKey(0)
             self.video.write(cv2.putText(img=cv2.resize(out_image, (len(self.images[0][0]), len(self.images[0]))),
                                 org=(int(0.3*len(self.images[0][0])), int(0.9*len(self.images[0]))), text=self.overlay_text,
                                 color=(255, 255, 255), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=1))
@@ -329,7 +331,7 @@ class HeatmapFrames:
         print('Last timestamp: ', last_ts)
         print('Time period: ', str(last_ts - first_ts))
         seconds_per_day = 86400
-        
+
         if num_steps > 0:
             time_step = (last_ts - first_ts) // num_steps
 
@@ -384,11 +386,11 @@ class HeatmapFrames:
             x_values = [point[0] for point in polygons]
             y_values = [point[1] for point in polygons]
             plt.scatter(x_values, y_values, s = 1)    
-            plt.savefig(f'./plots/points_{x}_scale_{x_scale}_{y_scale}.png')
-            if show: 
-                plt.show()
+            #if show: 
+            print("Image is displayed - close to continue")
+            plt.show()
 
-            plt.close()  
+            #plt.close()  
             
             os.makedirs('coordinates', exist_ok = True) 
             textfile = open(f'coordinates/figure_{x}_scale_{x_scale}_{y_scale}-png.txt', 'w')
@@ -408,6 +410,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Create a heatmap animation out of multiple CSV files.',
       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('filenames', nargs='+', help='names of the CSV files to be used')
+    parser.add_argument('--image_id', default='-', help='image ID from UEyes dataset')
+    parser.add_argument('--dataset_name', default='-', help='dataset name')
     parser.add_argument('--delimiter', default=' ', help='column delimiter')
     parser.add_argument('--outfile', help='output video filename')
     parser.add_argument('--time_step', type=int, default=100, help='time step duration, in seconds')
@@ -421,13 +425,15 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', default=False, action='store_true', help='print more progress messges')
     parser.add_argument('--time_overlay', default=False, action='store_true',
                         help='display text overlay indicating when the data was recorded')
+    parser.add_argument('--show', default=False, action='store_true',
+                        help='show intermediate heatmaps')
     parser.add_argument('--x_scale', type=float, default=1, help='the x coordinates are divided by this scale')
     parser.add_argument('--y_scale', type=float, default=1, help='the y coordinates are divided by this scale')
     parser.add_argument('--smoothing', type=int, default=100, help="median_filter smoothing/blur to remove image artifacts, for example -smoothing 2 will blur lightly. (default: %(default)s)")
     args = parser.parse_args()
 
     if not args.outfile:
-        args.outfile = f'hb_{int(time.time())}.mp4'
+        args.outfile = f'{args.dataset_name}_imId-{args.image_id}_smoothing-{args.smoothing}.mp4'
 
     # About the CSV format:
     # - At least three columns must be provided: `X`, `Y`, and `Unix timestamp` (either in seconds or milliseconds).
@@ -439,39 +445,50 @@ if __name__ == '__main__':
     #for filename in args.filenames:
     # EDIT: args.filenames -> glob.glob(args.filenames[0])
     # list all files matching the .csv pattern
+
     for filename in glob.glob(args.filenames[0]):
         with open(filename) as f:
-            reader = csv.reader(f, delimiter=args.delimiter)
+            reader = csv.reader(f) #, delimiter=args.delimiter)
             for row in reader:
+                #print(row)
                 # TODO: Consider a 4th column (movment duration) in the future.
                 x, y, t = row[0:3]
-
+                #print(x, y, t)
+                #exit()
+                
                 # Ignore CSV header, if present.
                 try:
                     t = float(t)
+                    # transform CPU timetick to Unix timestamp:
+                    # convert microseconds to seconds,
+                    # subtract n_seconds between 0001-00-01 00:00:00 and 1970-01-01 01:00:00
+                    #t = t/10000000 #- 62136892800
                 except:
                     continue
 
                 # Always work in seconds.
                 if t > now:
                     t = t / 1000.
-
-                move_events.append([float(x), float(y), int(t)])
     
+                move_events.append([float(x)*1000, float(y)*1000, int(t)])
+    print(move_events)
 
     text_overlay = ''
     if args.time_overlay:
         first_ts = move_events[0][2]
         last_ts = move_events[-1][2]
+        print(first_ts)
+        print(last_ts)
         display_format = '%Y-%m-%d %H:%M:%S'
         first_date = datetime.fromtimestamp(first_ts).strftime(display_format)
         last_date = datetime.fromtimestamp(last_ts).strftime(display_format)
         text_overlay = f'{first_date} --> {last_date}'
+        print(text_overlay)
 
     #
 
     hf = HeatmapFrames(move_events, args.map_width, args.map_height, args.kde_bins)
-    images, polygons = hf.generate(time_step=args.time_step, num_steps=args.num_steps, x_scale=args.x_scale, y_scale=args.y_scale)
+    images, polygons = hf.generate(time_step=args.time_step, num_steps=args.num_steps, x_scale=args.x_scale, y_scale=args.y_scale, show = args.show)
 
     # TODO: Export frames to PNG files so that we can try other blending techniques offline.
 
