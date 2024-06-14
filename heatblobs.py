@@ -149,6 +149,11 @@ class AnimationCreator:
         leftArray = polygons_left
         rightArray = polygons_right
         delaunayTri = Delaunay(leftArray)
+
+        _ = delaunay_plot_2d(delaunayTri)
+        plt.show()
+        plt.savefig("delaunay.png")
+        plt.close()
         
         leftNP = leftArray[delaunayTri.simplices]
         rightNP = rightArray[delaunayTri.simplices]
@@ -305,10 +310,58 @@ class HeatmapFrames:
         #for i in polygons[2:]:
         #    contour += i 
         # resample n points in the contour
-        contour = scipy.signal.resample(contour, 200)
+
+        contour = polygons[-1]
+        contour = scipy.signal.resample(contour, 50)
 
         return contour
 
+    # Automatic feature points
+    def autofeaturepoints(self, img, featuregridsize=7, showfeatures=True):
+        result = []
+
+        try:
+
+            if (showfeatures) : print(img.shape)
+            
+            # add the 4 corners to result
+            result += ([ [0, 0], [(img.shape[1]-1), 0], [0, (img.shape[0]-1)], [(img.shape[1]-1), (img.shape[0]-1)] ])
+
+            h = int(img.shape[0] / featuregridsize)-1
+            w = int(img.shape[1] / featuregridsize)-1
+            
+            for i in range(0,featuregridsize) :
+                for j in range(0,featuregridsize) :
+                    
+                    # crop to a small part of the image and find 1 feature pont or middle point
+                    crop_img = img[ (j*h):(j*h)+h, (i*w):(i*w)+w ]
+                    gray = cv2.cvtColor(crop_img,cv2.COLOR_BGR2GRAY)
+                    featurepoints = cv2.goodFeaturesToTrack(gray,1,0.1,10) # TODO: parameters can be tuned
+                    if featurepoints is None:
+                        featurepoints = [[[ h/2, w/2 ]]]
+                    featurepoints = np.intp(featurepoints)
+                    
+                    # add feature point to result, optionally draw
+                    for featurepoint in featurepoints:
+                        x,y = featurepoint.ravel()
+                        y = y + (j*h)
+                        x = x + (i*w)
+                        if (showfeatures) : cv2.circle(img,(x,y),3,255,-1)
+                        result.append([x,y])
+            
+            # optionally draw features
+            if (showfeatures) : 
+                cv2.imshow("",img)
+                cv2.waitKey(0)
+
+        except Exception as ex : 
+            print('Exception: ', ex) 
+            
+            #print(idx) 
+        
+        print(result)
+        return result
+ 
 
     def generate(self, time_step=10, num_steps=0, x_scale=1, y_scale=1, show=False):
         # Our elementary time unit is seconds.
@@ -363,11 +416,19 @@ class HeatmapFrames:
             buf.seek(0)
             img = plt.imread(buf) * 255
             img[:, :, [0, 1, 2]] = img[:, :, [2, 1, 0]]
-            img = img.astype(np.uint8)
-            img = Image.fromarray(img)
+            img_array = img.astype(np.uint8)
+            img = Image.fromarray(img_array)
             self.images.append(np.array(img))
             
             polygons = self.create_polygons([data], axes, x_scale, y_scale)
+
+            # add the 4 corners to result
+            polygons = np.vstack((polygons, np.array([[0, 0], [(img_array.shape[1]-1), 0], [0, (img_array.shape[0]-1)], [(img_array.shape[1]-1), (img_array.shape[0]-1)]])))
+    
+            autofeatures_grid = np.array(self.autofeaturepoints(img_array))
+            
+            print(polygons.shape, autofeatures_grid.shape)
+            polygons = np.vstack((polygons, autofeatures_grid))
             self.polygons.append(polygons)
       
             x_values = [point[0] for point in polygons]
@@ -419,8 +480,11 @@ if __name__ == '__main__':
     parser.add_argument('--smoothing', type=int, default=100, help="median_filter smoothing/blur to remove image artifacts, for example -smoothing 2 will blur lightly. (default: %(default)s)")
     args = parser.parse_args()
 
+
+    now = time.mktime(time.gmtime())
+    # Animation filename
     if not args.outfile:
-        args.outfile = f'{args.dataset_name}_imId-{args.image_id}_smoothing-{args.smoothing}.mp4'
+        args.outfile = f'{args.dataset_name}_imId-{args.image_id}_smoothing-{args.smoothing}_{str(now)}.mp4'
 
     # About the CSV format:
     # - At least three columns must be provided: `X`, `Y`, and `Unix timestamp` (either in seconds or milliseconds).
@@ -432,7 +496,7 @@ if __name__ == '__main__':
     #for filename in args.filenames:
     # EDIT: args.filenames -> glob.glob(args.filenames[0])
     # list all files matching the .csv pattern
-
+    
     for filename in glob.glob(args.filenames[0]):
         with open(filename) as f:
             reader = csv.reader(f) #, delimiter=args.delimiter)
