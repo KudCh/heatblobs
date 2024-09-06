@@ -1,6 +1,6 @@
 # HeatBlobs
 
-Generate animated heatmaps.
+Copy of oroginal heatblobs repository by Prof. Luis Leiva. 
 
 ## Installation
 
