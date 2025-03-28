@@ -1,6 +1,6 @@
 # HeatBlobs
 
-Copy of oroginal heatblobs repository by Prof. Luis Leiva. 
+Copy of original heatblobs repository by Prof. Luis Leiva. 
 
 ## Installation
 
